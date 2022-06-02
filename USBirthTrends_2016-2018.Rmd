@@ -1,0 +1,289 @@
+---
+title: "US Births (2016-2018)"
+subtitle: "Google Data Analytics Capstone"
+author: 'Gregory Van'
+date: '2022-05-18'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction (Ask)
+
+For the capstone project of Coursera's Google Data Analytics program, I decided to choose my own case study to showcase the complete steps of the data analysis process which are ask, prepare, process, analyze, share and act. While searching for a dataset for the project, I decided to choose something that was personal to me. My wife and I are expecting our first child later this year so I decided to choose a dataset relating to births in the United States. I also work with an obstetric ultrasound clinic to 3D print ultrasound models of babies so I want to discover trends and information around this field. Although I ultimately chose this project for my own personal interest, it can also support a business case. 
+
+### Business Task
+In this analysis, I will answer a few questions regarding births in the US and identify any trends among demographics or geographic location. These questions can potentially help organizations make business decisions such as who to target in a baby marketing ad campaign, where to open a obstetrics ultrasound clinic, or estimating the future market size of maternity wear by looking at trends in birthrates.
+
+Questions that I will be looking to answer:
+
+1) Which states have the most number of birth from 2016 to 2018? Which states have the highest birthrates? 
+2) What is the average age of mothers giving birth per state? 
+3) What is the average age of mothers giving birth by mother's ethnicity?
+4) Over the three years, has birthrates decreased or increased? 
+
+To answer these questions, I used public data collected from the CDC and the United States Census Bureau.
+
+# Data Source (Prepare)
+
+The primary data source I used was obtained from Google's BigQuery public datasets. The data is a subset of a larger data source from the Centers for Disease Control (CDC) which collects and compiles yearly data for live births in the United States. The data is collected from birth certificates which are required by law to be completed for all births. The dataset from BigQuery used in this analysis is called "county_natality_by_mother_race" and is part of "sdoh_cdc_wonder_natality". This dataset includes aggregated data about mothers and births by county in the United States from 2016 to 2018.
+
+The dataset can be found here: [Births Data Summary](https://console.cloud.google.com/marketplace/product/center-disease-control/wonder-births?project=nodal-isotope-335310)
+
+The dataset has 12 columns and 8843 rows. To load the data into RStudio, I first downloaded the dataset from BigQuery using the export function. Then I uploaded the csv file into RStudio Cloud.
+
+```{r load birth data}
+birth_data <- read.csv("natality_mother_race.csv")
+```
+
+Sample view of the data:
+
+```{r exam birth data}
+head(birth_data)
+```
+
+View attributes:
+
+```{r view attribute names}
+colnames(birth_data)
+```
+
+The second data source I used was from the United States Census Bureau (data.census.gov). I was able to query the data I needed to a csv file directly from their database. I used this data source to get population data for each state from 2016 to 2018. This data will be used in the birthrate calculations.
+
+```{r load and examine population data}
+population_data <- read.csv("state_populations.csv")
+head(population_data)
+```
+
+# Data Manipulation (Process)
+
+```{r, message=FALSE}
+install.packages("tidyverse")
+```
+```{r, message=FALSE}
+install.packages("usmap")
+```
+```{r, message=FALSE}
+install.packages("gridExtra")
+```
+
+```{r, message=FALSE}
+library(tidyverse)
+library(stringr)
+library(usmap)
+library(ggplot2)
+library(gridExtra)
+```
+
+### Create Subset of Data
+I will only select columns of interest that will help answer the business questions.
+
+```{r select columns}
+birth_data_subset <- subset(birth_data, select=c("Year", "County_of_Residence", "Mothers_Single_Race", "Ave_Age_of_Mother", "Births"))
+head(birth_data_subset)
+```
+
+### Formatting
+All the dates show up as the 1st of January but the column header indicates it should only be year. Therefore, I will adjust the dates to display the year only.
+
+```{r change format to year}
+birth_data_subset$Year <- format(as.Date(birth_data_subset$Year, format = "%Y-%m-%d"), "%Y")
+head(birth_data_subset)
+```
+
+For this analysis, my main interest is the state of residence thus, I will remove the county from the residence attribute.
+
+```{r change residence to state}
+birth_data_subset$County_of_Residence = str_sub(birth_data_subset$County_of_Residence,-2) 
+colnames(birth_data_subset)[2] <- "State"
+head(birth_data_subset)
+```
+
+### Data Validation
+Now I will look through the data to examine it and clean up the data if necessary. First, I will check if there are any null values.
+
+```{r check for nulls}
+sum(is.na(birth_data_subset))
+```
+
+The dataset does not have null values. Next, I will check the dataset for errors or inconsistencies. I will check the number of unique states in our dataset.
+
+```{r number of states}
+length(unique(birth_data_subset$State))
+```
+
+I was expecting 50 values since there are 50 states. I will look into the values further to see why there are 51 unique values.
+
+```{r unique values of states}
+sort(unique(birth_data_subset$State))
+```
+
+It appears "DC" is in included in our dataset which is why there are 51 values. Next, I will look into mother's race for inconsistencies.
+
+```{r unique mothers race}
+unique(birth_data_subset$Mothers_Single_Race)
+```
+
+The categories shown above appear acceptable. Now I will look at the quantitative values to check for errors by seeing if there are any extreme outliers.
+
+```{r summary ave mothers age}
+summary(birth_data_subset$Ave_Age_of_Mother)
+```
+```{r ave births}
+summary(birth_data_subset$Births)
+```
+
+The dataset does show any obvious errors from the summary. 
+
+For the population_data dataset, I will remove the rows that are neither states or DC. This will help with joining the dataset later. 
+
+```{r remove non state rows}
+population_data = subset(population_data, STATE != 0)
+head(population_data)
+```
+
+I will now move on to the analysis section and look for answers to the questions outlined in the business task.
+
+# Analysis (Analyze)
+
+### Q1: Birth Totals and Birthrates
+
+Total births in the United States from 2016 to 2018.
+
+```{r total births}
+total_births <- birth_data_subset %>% group_by(State)  %>%
+                    summarise(Births= sum(Births))
+total_births[order(total_births$Births, decreasing = TRUE),]
+```
+
+As expected, California had the highest number of births in the country since they are the most populous state. However, what would be more useful is seeing the birthrates per capita. To do this, first I will get the birthrates for each state for each year. Then I will average the yearly birthrates for each state. 
+
+```{r state population}
+state_population <- subset(population_data, select=c("ABBREVIATION", "POPESTIMATE2016", "POPESTIMATE2017", "POPESTIMATE2018"))
+colnames(state_population) <- c("State", "Pop_2016", "Pop_2017", "Pop_2018")
+state_population
+```
+
+```{r state births, message=FALSE}
+state_births <- birth_data_subset %>% group_by(Year, State)  %>%
+                    summarise(Births = sum(Births))
+# Need to make the data from long to wide
+state_births = spread(state_births, Year, Births)
+colnames(state_births) <- c("State", "Birth_2016", "Birth_2017", "Birth_2018")
+state_births
+```
+
+```{r birthrate}
+birthrate = merge(state_births, state_population, by="State")
+birthrate$Ave_Birthrateper1000 = round((1000 * (birthrate$Birth_2016 / birthrate$Pop_2016 + birthrate$Birth_2017 / birthrate$Pop_2017 + birthrate$Birth_2018 / birthrate$Pop_2018) / 3), digits = 3)
+birthrate[order(birthrate$Ave_Birthrateper1000, decreasing = TRUE),]
+```
+
+### Q2: Mothers Average Age by State
+
+Now I will find the average age of mothers giving birth per state. To do this, I cannot simply group by state and then take the mean of the mother's age because the value of the mother's age is an average of the county of residence and each county has a different number of total births. It is more accurate to take a weighted average instead by taking the sum of births times the mother's average age and then divide by the total number of births. For instance, if county A has 30 births and the average age is 30 and county B has 15 births and the average age is 24, the average age for these two counties should show as 28 and not 27. 
+
+```{r average age}
+ave_age <- birth_data_subset %>% group_by(State)  %>%
+                    summarise(Average_Age = round(sum(Births*Ave_Age_of_Mother)/sum(Births), digits = 2))
+ave_age[order(ave_age$Average_Age),]
+```
+
+### Q3: Mother's Average Age by Race
+The dataset has women identifing as one of 6 possible ethnicity groups.
+
+```{r average age by race}
+ave_age_race <- birth_data_subset %>% group_by(Mothers_Single_Race)  %>%
+                    summarise(Average_Age = round(sum(Births*Ave_Age_of_Mother)/sum(Births), digits = 2))
+ave_age_race[order(ave_age_race$Average_Age),]
+```
+
+### Q4: Trajectory of Birthrates from 2016 to 2018
+To understand the birthrate trajectories, I have to find the birthrates for the entire US for each year of 2016, 2017 and 2018. Then I can see if it increases or decreases.
+
+```{r births by year}
+yearly_birthrates <- birth_data_subset %>% group_by(Year)  %>%
+                    summarise(Births= sum(Births))
+yearly_birthrates$Population <- c(sum(population_data$POPESTIMATE2016), sum(population_data$POPESTIMATE2017), sum(population_data$POPESTIMATE2018))
+yearly_birthrates$Birthrate <- 1000*yearly_birthrates$Births/yearly_birthrates$Population
+yearly_birthrates
+```
+
+# Results (Share)
+
+### Q1: Map of Birth Totals and Birthrates
+
+From the results of the data, California had the highest births between 2016 and 2018. This was followed by Texas. The following heat map visually shows that states with higher populations had the higher number of births which is not of surprise.
+
+```{r us map births}
+colnames(total_births)[1] <- "state"
+colnames(birthrate)[1] <- "state"
+
+birthmap <- plot_usmap(data = total_births, values = "Births", color = "black") + 
+  scale_fill_continuous(name = "Total Births (2016-2018)", label = scales::comma) + 
+  theme(legend.position = "right") + ggtitle("US Births")
+
+birthrate$Ave_Population = round(((birthrate$Pop_2016 + birthrate$Pop_2017 + birthrate$Pop_2018) / 3), digits = 1)
+
+popmap <- plot_usmap(data = birthrate, values = "Ave_Population", color = "black") + 
+  scale_fill_continuous(name = "Average Population (2016-2018)", label = scales::comma) + 
+  theme(legend.position = "right") + ggtitle("US Population")
+
+grid.arrange(
+  birthmap,
+  popmap,
+  nrow = 2
+  )
+```
+
+Plotting the map with birthrate data shows which states have the highest births per capita. Utah, North Dakota, Alaska, and South Dakota top the list here. Many of these states are located in the central part of the US. New Hampshire, Vermont, Maine, Connecticut and Rhode Island are at the bottom of the list. The northeast in general tends to have lower birthrates.
+
+```{r us map birthrate}
+plot_usmap(data = birthrate, values = "Ave_Birthrateper1000", color = "black") + 
+  scale_fill_continuous(name = "Birthrate per 1000 (2016-2018)", label = scales::comma) + 
+  theme(legend.position = "right") + ggtitle("US Population")
+```
+
+### Q2: Map of Mothers Average Age by State
+
+Now we will look at the average age of mothers at the time of birth by states. The plot shows that in states in the northeast, women tend to be a bit older when giving birth. Massachusetts, DC, New Jersey, Connecticut, New York and Maryland have the oldest average age. The states with the youngest average age are Mississippi, Arkansas, West Virginia and Oklahoma.
+
+```{r us map ave age}
+colnames(ave_age)[1] <- "state"
+
+plot_usmap(data = ave_age, values = "Average_Age", color = "black") + 
+  scale_fill_continuous(low = "white", high = "darkblue", name = "Average Age (2016-2018)", label = scales::comma) + 
+  theme(legend.position = "right") + ggtitle("Average US Mother's Age Giving Birth")
+```
+
+### Q3: Chart of Mother's Average Age by Race
+
+To compare the mother's age by ethnicity, the bar chart below gives a visual depiction. Asian mothers tend to have babies when they are older. American Indian/Alaska Native mothers tend to have babies at a younger age.
+
+```{r plot ave age by race}
+ggplot(data=ave_age_race, aes(x=Mothers_Single_Race, y=Average_Age, fill=Mothers_Single_Race)) +
+  geom_bar(stat="identity") + geom_text(aes(label=Average_Age), vjust=-0.3, size=3.5) + theme(axis.text.x = element_blank()) + 
+  ggtitle("US Average Age of Birthing Mothers by Ethnicity (2016-2018)") +
+  xlab("Ethnicity") + ylab("Age") + labs(fill = "Mother's Ethnicity")
+```
+
+### Q4: Line Chart of Birthrates from 2016 to 2018
+
+Finally to look at the trends of birth as a whole for the United States, I will plot the yearly birthrates from 2016 to 2018. The chart shows that the birthrates are decreasing as a whole over this time. In fact, the number of births decreased each year while the population grew.
+
+```{r plot us birthrates by year}
+ggplot(yearly_birthrates, aes(x=Year, y=Birthrate, group=1)) +
+  geom_line() +
+  geom_point() + 
+  ggtitle("US Births vs Population")
+```
+
+# Conclusion (Act)
+
+From the analysis, for the years 2016-2018, it was found that states with the highest populations had the highest number of births. However, Utah had the highest birthrate per capita and in general, the central region of the United States typically had higher birthrates. The analysis also showed that women in Mississippi and Arkansas tend to have babies at a younger age and states in the northeast like Massachusetts, DC and New Jersey tend to have women of older age giving birth. In addition, American Indian/Alaska Native mothers have babies when they are younger and Asian mothers tend to have babies when they are older. Finally, the data showed that both birthrates and total births have been decreasing from 2016 to 2018 in the United States.
+
+This information can be used to perform marketing analysis. It gives demographics about women who are having babies which in turn can be used for advertisement or to help drive other business decisions. This can also be a good starting point to look further into root causes of why Asian women tend to have babies at a later age than the rest of the population or why birthrates are decreasing.
+
+To improve the analysis, there are a few things that can be looked at but would require additional datasets. For birthrate, instead of including everyone in the population, it may be better to calculate it based on population of just females in a certain age range like from 18-45 years old. Additionally, expanding the dataset to include more years would allow us to make predictions such as estimating populations in the future.
